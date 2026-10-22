@@ -1,183 +1,20 @@
 // === سامانه مدیریت پرسنل، پیمانکار و انبار (CRM) ===
 // Cloudflare Worker + D1 — بدون وابستگی خارجی
-
 const JSONH = { 'Content-Type': 'application/json; charset=utf-8' };
 
 // ---------- شِما دیتابیس ----------
 const INIT_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    pass_hash TEXT NOT NULL,
-    salt TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'viewer',
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT
-  )`,
-  `CREATE TABLE IF NOT EXISTS projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    code TEXT,
-    location TEXT,
-    description TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS contractors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    contact_person TEXT,
-    phone TEXT,
-    description TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS project_contractors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id),
-    contractor_id INTEGER NOT NULL REFERENCES contractors(id),
-    UNIQUE(project_id, contractor_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS personnel (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    first_name TEXT NOT NULL,
-    last_name TEXT NOT NULL,
-    code TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL DEFAULT 'contractor' CHECK (type IN ('internal','contractor')),
-    contractor_id INTEGER REFERENCES contractors(id),
-    national_id TEXT,
-    phone TEXT,
-    position TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    unit TEXT NOT NULL DEFAULT 'عدد',
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS deliveries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id),
-    personnel_id INTEGER NOT NULL REFERENCES personnel(id),
-    item_id INTEGER NOT NULL REFERENCES items(id),
-    quantity REAL NOT NULL,
-    jdate TEXT NOT NULL,
-    notes TEXT,
-    created_by INTEGER REFERENCES users(id),
-    created_at TEXT NOT NULL,
-    updated_at TEXT
-  )`,
+  `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL, pass_hash TEXT NOT NULL, salt TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'viewer', is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, code TEXT, location TEXT, description TEXT, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS contractors (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, contact_person TEXT, phone TEXT, description TEXT, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS project_contractors (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id), contractor_id INTEGER NOT NULL REFERENCES contractors(id), UNIQUE(project_id, contractor_id))`,
+  `CREATE TABLE IF NOT EXISTS personnel (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT NOT NULL, last_name TEXT NOT NULL, code TEXT NOT NULL UNIQUE, type TEXT NOT NULL DEFAULT 'contractor' CHECK (type IN ('internal','contractor')), contractor_id INTEGER REFERENCES contractors(id), national_id TEXT, phone TEXT, position TEXT, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, unit TEXT NOT NULL DEFAULT 'عدد', is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id), personnel_id INTEGER NOT NULL REFERENCES personnel(id), item_id INTEGER NOT NULL REFERENCES items(id), quantity REAL NOT NULL, jdate TEXT NOT NULL, notes TEXT, created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS idx_deliveries_jdate ON deliveries(jdate)`,
-  `CREATE TABLE IF NOT EXISTS attendance (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    personnel_id INTEGER NOT NULL REFERENCES personnel(id),
-    project_id INTEGER REFERENCES projects(id),
-    jdate TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'present' CHECK (status IN ('present','absent','leave','mission','holiday')),
-    check_in TEXT,
-    check_out TEXT,
-    notes TEXT,
-    created_by INTEGER REFERENCES users(id),
-    created_at TEXT NOT NULL,
-    updated_at TEXT,
-    UNIQUE(personnel_id, jdate)
-  )`,
+  `CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, personnel_id INTEGER NOT NULL REFERENCES personnel(id), project_id INTEGER REFERENCES projects(id), jdate TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'present' CHECK (status IN ('present','absent','leave','mission','holiday')), check_in TEXT, check_out TEXT, notes TEXT, created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT, UNIQUE(personnel_id, jdate))`,
   `CREATE INDEX IF NOT EXISTS idx_attendance_jdate ON attendance(jdate)`,
-  `CREATE TABLE IF NOT EXISTS daily_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id),
-    jdate TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_by INTEGER REFERENCES users(id),
-    created_at TEXT NOT NULL,
-    updated_at TEXT,
-    UNIQUE(project_id, jdate)
-  )`,
+  `CREATE TABLE IF NOT EXISTS daily_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id), jdate TEXT NOT NULL, content TEXT NOT NULL, created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT, UNIQUE(project_id, jdate))`,
   `CREATE INDEX IF NOT EXISTS idx_reports_jdate ON daily_reports(jdate)`
 ];
-
-// ---------- تاریخ شمسی (الگوریتم jalaali — دقیق و کامل) ----------
-const div = (a, b) => ~~(a / b);
-const mod = (a, b) => a - ~~(a / b) * b;
-
-function jalCal(jy) {
-  const breaks = [-61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210, 1635, 2060, 2097, 2192, 2262, 2324, 2394, 2456, 3178];
-  let bl = breaks.length, jump = 0, leapJ = -14, jp = breaks[0], jm;
-  if (jy < jp || jy >= breaks[bl - 1]) throw new Error('سال خارج از محدوده');
-  for (let i = 1; i < bl; i++) {
-    jm = breaks[i];
-    jump = jm - jp;
-    if (jy < jm) break;
-    leapJ += div(jump, 33) * 8 + div(mod(jump, 33), 4);
-    jp = jm;
-  }
-  let n = jy - jp;
-  leapJ = leapJ + div(n, 33) * 8 + div(mod(n, 33) + 3, 4);
-  if (mod(jump, 33) === 4 && jump - n === 4) leapJ += 1;
-  const leapG = div(jy + 621, 4) - div((div(jy + 621, 100) + 1) * 3, 4) - 150;
-  const march = 20 + leapJ - leapG;
-  if (jump - n < 6) n = n - jump + div(jump + 4, 33) * 33;
-  let leap = mod(mod(n + 1, 33) - 1, 4);
-  if (leap === -1) leap = 4;
-  return { leap, gy: jy + 621, march };
-}
-function g2d(gy, gm, gd) {
-  let d = div((gy + div(gm - 8, 6) + 100100) * 1461, 4) + div(153 * mod(gm + 9, 12) + 2, 5) + gd - 34840408;
-  d = d - div(div(gy + 100100 + div(gm - 8, 6), 100) * 3, 4) + 752;
-  return d;
-}
-function d2g(jdn) {
-  let j = 4 * jdn + 139361631;
-  j = j + div(div(4 * jdn + 183187720, 146097) * 3, 4) * 4 - 3908;
-  const i = div(mod(j, 1461), 4) * 5 + 308;
-  const gd = div(mod(i, 153), 5) + 1;
-  const gm = mod(div(i, 153), 12) + 1;
-  const gy = div(j, 1461) - 100100 + div(8 - gm, 6);
-  return { gy, gm, gd };
-}
-function d2j(jdn) {
-  const gy = d2g(jdn).gy;
-  let jy = gy - 621;
-  const r = jalCal(jy);
-  const jdn1f = g2d(gy, 3, r.march);
-  let k = jdn - jdn1f;
-  if (k >= 0) {
-    if (k <= 185) {
-      const jm = 1 + div(k, 31);
-      const jd = mod(k, 31) + 1;
-      return [jy, jm, jd];
-    }
-    k -= 186;
-  } else {
-    jy -= 1;
-    k += 179;
-    if (r.leap === 1) k += 1;
-  }
-  const jm = 7 + div(k, 30);
-  const jd = mod(k, 30) + 1;
-  return [jy, jm, jd];
-}
-function j2d(jy, jm, jd) {
-  const r = jalCal(jy);
-  return g2d(r.gy, 3, r.march) + (jm - 1) * 31 - div(jm, 7) * (jm - 7) + jd - 1;
-}
-function gregorianToJalali(gy, gm, gd) { return d2j(g2d(gy, gm, gd)); }
-function jalaliToGregorian(jy, jm, jd) { const r = d2g(j2d(jy, jm, jd)); return [r.gy, r.gm, r.gd]; }
-function jIsLeap(jy) { return jalCal(jy).leap === 0; }
-function jMonthLength(jy, jm) {
-  if (jm <= 6) return 31;
-  if (jm <= 11) return 30;
-  return jIsLeap(jy) ? 30 : 29;
-}
-// امروز به وقت تهران: رشته شمسی YYYY-MM-DD
-function todayJalali() {
-  const now = new Date(Date.now() + 12600000); // UTC+3:30
-  const j = gregorianToJalali(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());
-  return `${j[0]}-${String(j[1]).padStart(2, '0')}-${String(j[2]).padStart(2, '0')}`;
-}
