@@ -1,0 +1,186 @@
+/* ===== رابط کاربری سامانه مدیریت پرسنل، پیمانکار و انبار ===== */
+'use strict';
+
+// ---------- ابزارهای عمومی ----------
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const esc = v => {
+  if (v === null || v === undefined) return '';
+  return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+};
+const FA_D = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+const toFa = v => String(v ?? '').replace(/[0-9]/g, d => FA_D[+d]);
+const faNum = v => (v === null || v === undefined || isNaN(+v)) ? (v ?? '') : toFa(Number(v).toLocaleString('en-US'));
+const STATUS_FA = { present: 'حاضر', absent: 'غایب', leave: 'مرخصی', mission: 'مأموریت', holiday: 'تعطیل' };
+const ROLE_FA = { admin: 'مدیر کل', manager: 'مدیر', operator: 'اپراتور ثبت', viewer: 'مشاهده‌گر' };
+
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const res = await fetch(path, opt);
+  const ct = res.headers.get('Content-Type') || '';
+  const data = ct.includes('json') ? await res.json() : await res.text();
+  if (!res.ok) {
+    if (res.status === 401 && AppState.user) { AppState.user = null; render(); }
+    throw new Error((data && data.error) || 'خطای غیرمنتظره در ارتباط با سرور');
+  }
+  return data;
+}
+
+function toast(msg, type = '') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  $('#toast-root').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 320); }, 3200);
+}
+
+function confirmModal(title, text, okLabel = 'حذف') {
+  return new Promise(resolve => {
+    openModal({
+      title,
+      body: `<p style="color:var(--text-2);font-size:13.5px">${esc(text)}</p>`,
+      foot: [
+        { label: 'انصراف', class: 'btn', cb: () => { closeModal(); resolve(false); } },
+        { label: okLabel, class: 'btn danger', cb: () => { closeModal(); resolve(true); } }
+      ],
+      noClose: false
+    });
+  });
+}
+
+function openModal({ title, body, foot, wide, noClose }) {
+  const root = $('#modal-root');
+  root.innerHTML = `
+    <div class="modal-overlay">
+      <div class="modal ${wide ? 'wide' : ''}">
+        <div class="modal-head">
+          <h3>${esc(title)}</h3>
+          ${noClose ? '' : '<button class="icon-btn" id="modal-x"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>'}
+        </div>
+        <div class="modal-body">${body}</div>
+        <div class="modal-foot"></div>
+      </div>
+    </div>`;
+  const overlay = $('.modal-overlay', root);
+  if (!noClose) $('#modal-x').onclick = closeModal;
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay && !noClose) closeModal(); });
+  const f = $('.modal-foot', root);
+  (foot || []).forEach(b => {
+    const btn = document.createElement('button');
+    btn.className = b.class || 'btn';
+    btn.innerHTML = b.icon ? ICONS[b.icon] + esc(b.label) : esc(b.label);
+    btn.onclick = b.cb;
+    f.appendChild(btn);
+  });
+  iPickers(root);
+}
+function closeModal() { $('#modal-root').innerHTML = ''; }
+
+// ---------- آیکون‌ها (SVG inline — بدون ایموجی) ----------
+const svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const ICONS = {
+  dashboard: svg('<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>'),
+  attendance: svg('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/><path d="M8.5 14l2 2 4-4"/>'),
+  warehouse: svg('<path d="M3 21V9l9-6 9 6v12"/><path d="M8 21v-7h8v7"/><path d="M8 14h8"/>'),
+  personnel: svg('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-5.5 6.5-5.5s6.5 2 6.5 5.5"/><path d="M16 4a3.5 3.5 0 010 7M21.5 20c0-3-2-5-4.5-5.4"/>'),
+  contractor: svg('<path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/><path d="M9 21v-4h6v4"/><path d="M9 14h.01M15 14h.01"/>'),
+  project: svg('<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>'),
+  reports: svg('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M9 16v-4M13 16v-6M17 16h-1"/>'),
+  users: svg('<circle cx="12" cy="8" r="4"/><path d="M5 21c0-4 3-6.5 7-6.5s7 2.5 7 6.5"/>'),
+  items: svg('<path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/>'),
+  plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  edit: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>'),
+  trash: svg('<path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>'),
+  download: svg('<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/>'),
+  search: svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'),
+  logout: svg('<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><path d="M17 16l4-4-4-4M21 12H9"/>'),
+  calendar: svg('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>'),
+  check: svg('<path d="M20 6L9 17l-5-5"/>'),
+  lock: svg('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>'),
+  shield: svg('<path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/>'),
+  clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>'),
+  mail: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 7l9 6 9-6"/>')
+};
+
+// ---------- وضعیت اپ ----------
+const AppState = { user: null, canWrite: [] };
+const canW = m => AppState.canWrite.includes(m);
+
+// ---------- ورود ----------
+function renderLogin() {
+  $('#root').innerHTML = `
+  <div class="login-wrap">
+    <div class="login-side">
+      <div class="side-bg"></div>
+      <div class="side-glow"></div>
+      <div class="login-brand">
+        <h1>سامانه مدیریت پرسنل,<br>پیمانکار و انبار</h1>
+        <p>ثبت و پیگیری نیروهای داخلی و پیمانکاری، حضور و غیاب ساعتی، اقلام تحویلی انبار و گزارش‌های روزانه پروژه‌ها در یک مرکز واحد.</p>
+        <div class="login-feats">
+          <div class="login-feat"><span class="fdot">${ICONS.check}</span> مدیریت پرسنل داخلی و نیروهای پیمانکار در هر پروژه</div>
+          <div class="login-feat"><span class="fdot">${ICONS.clock}</span> حضور و غیاب روزانه بر اساس ساعت ورود و خروج</div>
+          <div class="login-feat"><span class="fdot">${ICONS.warehouse}</span> سوابق تحویل اقلام انبار تفکیک‌شده به‌تفصیل</div>
+          <div class="login-feat"><span class="fdot">${ICONS.download}</span> خروجی اکسل از تمام گزارش‌ها با تقویم شمسی</div>
+        </div>
+      </div>
+    </div>
+    <div class="login-form-side">
+      <div class="login-card">
+        <div class="logo-mark">${ICONS.shield}</div>
+        <h2>ورود به سامانه</h2>
+        <div class="sub">برای ادامه، با حساب کاربری خود وارد شوید.</div>
+        <form id="login-form">
+          <div class="login-err" id="login-err"></div>
+          <label class="fl">نام کاربری
+            <input class="inp" id="li-user" autocomplete="username" autofocus placeholder="">
+          </label>
+          <label class="fl">رمز عبور
+            <input class="inp" type="password" id="li-pass" autocomplete="current-password" placeholder="">
+          </label>
+          <button class="btn primary" style="width:100%;padding:10px" id="li-btn">ورود</button>
+        </form>
+        <div class="login-foot">دسترسی شما پس از ورود مطابق سطح تعریف‌شده توسط مدیر سیستم خواهد بود.</div>
+      </div>
+    </div>
+  </div>`;
+  $('#login-form').onsubmit = async e => {
+    e.preventDefault();
+    const btn = $('#li-btn');
+    btn.disabled = true; btn.textContent = 'در حال بررسی...';
+    $('#login-err').style.display = 'none';
+    try {
+      await api('POST', '/api/login', { username: $('#li-user').value.trim(), password: $('#li-pass').value });
+      const me = await api('GET', '/api/me');
+      AppState.user = me.user;
+      AppState.canWrite = me.canWrite || [];
+      toast('خوش آمدید، ' + AppState.user.name, 'ok');
+      location.hash = '#/dashboard';
+      render();
+    } catch (er) {
+      $('#login-err').textContent = er.message;
+      $('#login-err').style.display = 'block';
+      btn.disabled = false; btn.textContent = 'ورود';
+    }
+  };
+}
+
+// ---------- شِل اپ ----------
+const NAV = [
+  { sec: 'کار روزانه' },
+  { key: 'dashboard', label: 'داشبورد', icon: 'dashboard', path: '#/dashboard' },
+  { key: 'attendance', label: 'حضور و غیاب', icon: 'attendance', path: '#/attendance', w: 'attendance' },
+  { key: 'deliveries', label: 'تحویلات انبار', icon: 'warehouse', path: '#/deliveries', w: 'deliveries' },
+  { key: 'reports', label: 'گزارش روزانه', icon: 'reports', path: '#/reports', w: 'reports' },
+  { sec: 'پایه‌های اطلاعاتی' },
+  { key: 'personnel', label: 'پرسنل', icon: 'personnel', path: '#/personnel', w: 'personnel' },
+  { key: 'contractors', label: 'پیمانکاران', icon: 'contractor', path: '#/contractors', w: 'contractors' },
+  { key: 'projects', label: 'پروژه‌ها', icon: 'project', path: '#/projects', w: 'projects' },
+  { key: 'items', label: 'اقلام انبار', icon: 'items', path: '#/items', w: 'items' },
+  { sec: 'مدیریت' },
+  { key: 'users', label: 'مدیران و دسترسی‌ها', icon: 'users', path: '#/users' }
+];
+
+function renderShell() {
+  const hash = location.hash || '#/dashboard';
+  const page = hash.split('/')[1] || 'dashboard';
