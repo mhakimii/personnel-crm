@@ -1,0 +1,159 @@
+// --- پروژه‌ها ---
+route('GET', '/api/projects', 'projects', async (req, env, params, url) => {
+  const all = url.searchParams.get('all') === '1';
+  const withToday = url.searchParams.get('withToday') === '1';
+  const today = todayJalali();
+  const rows = await env.DB.prepare(
+    `SELECT pr.*,
+       (SELECT GROUP_CONCAT(c.name, ' ، ') FROM project_contractors pc JOIN contractors c ON c.id=pc.contractor_id WHERE pc.project_id=pr.id) contractor_names,
+       ${withToday ? `(SELECT COUNT(*) FROM attendance a WHERE a.project_id=pr.id AND a.jdate=@2 AND a.status='present')` : `0`} today_present
+     FROM projects pr ${all ? '' : 'WHERE pr.is_active=1'} ORDER BY pr.is_active DESC, pr.id DESC`)
+    .bind(...(withToday ? [today] : [])).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/projects', 'projects', async (req, env) => {
+  const b = await readJson(req);
+  const name = String(b.name || '').trim();
+  if (!name) return jerr('نام پروژه الزامی است.');
+  if (await env.DB.prepare(`SELECT id FROM projects WHERE name=?`).bind(name).first()) return jerr('پروژه‌ای با این نام قبلاً ثبت شده است.');
+  const r = await env.DB.prepare(`INSERT INTO projects (name, code, location, description, is_active, created_at) VALUES (?,?,?,?,1,?)`)
+    .bind(name, String(b.code || '').trim(), String(b.location || '').trim(), String(b.description || '').trim(), nowIso()).run();
+  const projectId = r.meta.last_row_id;
+  await env.DB.prepare(`DELETE FROM project_contractors WHERE project_id=?`).bind(projectId).run();
+  for (const cid of (b.contractor_ids || []).filter(x => +x > 0)) {
+    await env.DB.prepare(`INSERT OR IGNORE INTO project_contractors (project_id, contractor_id) VALUES (?,?)`).bind(projectId, +cid).run();
+  }
+  return json({ ok: true, id: projectId });
+});
+route('PUT', '/api/projects/:id', 'projects', async (req, env, params) => {
+  const id = +params[0];
+  const b = await readJson(req);
+  if (!(await env.DB.prepare(`SELECT id FROM projects WHERE id=?`).bind(id).first())) return jerr('پروژه یافت نشد.', 404);
+  const set = [], args = [];
+  if (b.name !== undefined) {
+    const name = String(b.name).trim();
+    if (!name) return jerr('نام پروژه الزامی است.');
+    if (await env.DB.prepare(`SELECT id FROM projects WHERE name=? AND id<>?`).bind(name, id).first()) return jerr('پروژه‌ای با این نام قبلاً ثبت شده است.');
+    set.push('name=?'); args.push(name);
+  }
+  for (const [k, col] of [['code', 'code'], ['location', 'location'], ['description', 'description']]) {
+    if (b[k] !== undefined) { set.push(col + '=?'); args.push(String(b[k]).trim()); }
+  }
+  if (b.is_active !== undefined) { set.push('is_active=?'); args.push(b.is_active ? 1 : 0); }
+  if (set.length) { args.push(id); await env.DB.prepare(`UPDATE projects SET ${set.join(', ')} WHERE id=?`).bind(...args).run(); }
+  if (Array.isArray(b.contractor_ids)) {
+    await env.DB.prepare(`DELETE FROM project_contractors WHERE project_id=?`).bind(id).run();
+    for (const cid of b.contractor_ids.filter(x => +x > 0)) {
+      await env.DB.prepare(`INSERT OR IGNORE INTO project_contractors (project_id, contractor_id) VALUES (?,?)`).bind(id, +cid).run();
+    }
+  }
+  return json({ ok: true });
+});
+route('GET', '/api/projects/:id/contractors', 'projects', async (req, env, params) => {
+  const rows = await env.DB.prepare(`SELECT c.id FROM project_contractors pc JOIN contractors c ON c.id=pc.contractor_id WHERE pc.project_id=?`).bind(+params[0]).all();
+  return json((rows.results || []).map(r => r.id));
+});
+
+// --- پیمانکاران ---
+route('GET', '/api/contractors', 'contractors', async (req, env, params, url) => {
+  const all = url.searchParams.get('all') === '1';
+  const rows = await env.DB.prepare(
+    `SELECT c.*,
+       (SELECT COUNT(*) FROM personnel p WHERE p.contractor_id=c.id AND p.is_active=1) personnel_count,
+       (SELECT COUNT(*) FROM project_contractors pc WHERE pc.contractor_id=c.id) project_count
+     FROM contractors c ${all ? '' : 'WHERE c.is_active=1'} ORDER BY c.is_active DESC, c.id DESC`).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/contractors', 'contractors', async (req, env) => {
+  const b = await readJson(req);
+  const name = String(b.name || '').trim();
+  if (!name) return jerr('نام پیمانکار الزامی است.');
+  if (await env.DB.prepare(`SELECT id FROM contractors WHERE name=?`).bind(name).first()) return jerr('پیمانکاری با این نام قبلاً ثبت شده است.');
+  const r = await env.DB.prepare(`INSERT INTO contractors (name, contact_person, phone, description, is_active, created_at) VALUES (?,?,?,?,1,?)`)
+    .bind(name, String(b.contact_person || '').trim(), String(b.phone || '').trim(), String(b.description || '').trim(), nowIso()).run();
+  return json({ ok: true, id: r.meta.last_row_id });
+});
+route('PUT', '/api/contractors/:id', 'contractors', async (req, env, params) => {
+  const id = +params[0];
+  const b = await readJson(req);
+  if (!(await env.DB.prepare(`SELECT id FROM contractors WHERE id=?`).bind(id).first())) return jerr('پیمانکار یافت نشد.', 404);
+  const set = [], args = [];
+  if (b.name !== undefined) {
+    const name = String(b.name).trim();
+    if (!name) return jerr('نام پیمانکار الزامی است.');
+    if (await env.DB.prepare(`SELECT id FROM contractors WHERE name=? AND id<>?`).bind(name, id).first()) return jerr('پیمانکاری با این نام قبلاً ثبت شده است.');
+    set.push('name=?'); args.push(name);
+  }
+  for (const [k, col] of [['contact_person', 'contact_person'], ['phone', 'phone'], ['description', 'description']]) {
+    if (b[k] !== undefined) { set.push(col + '=?'); args.push(String(b[k]).trim()); }
+  }
+  if (b.is_active !== undefined) { set.push('is_active=?'); args.push(b.is_active ? 1 : 0); }
+  if (set.length) { args.push(id); await env.DB.prepare(`UPDATE contractors SET ${set.join(', ')} WHERE id=?`).bind(...args).run(); }
+  return json({ ok: true });
+});
+
+// --- پرسنل ---
+route('GET', '/api/personnel', 'personnel', async (req, env, params, url) => {
+  const sp = url.searchParams;
+  const where = [], args = [];
+  if (sp.get('all') !== '1') where.push('p.is_active=1');
+  const type = sp.get('type');
+  if (type === 'internal' || type === 'contractor') { where.push('p.type=?'); args.push(type); }
+  if (+sp.get('contractor_id')) { where.push('p.contractor_id=?'); args.push(+sp.get('contractor_id')); }
+  if (+sp.get('project_id')) {
+    where.push('(p.contractor_id IN (SELECT contractor_id FROM project_contractors WHERE project_id=?) OR p.contractor_id IS NULL)');
+    args.push(+sp.get('project_id'));
+  }
+  const search = (sp.get('q') || '').trim();
+  if (search) { where.push('(p.first_name LIKE ? OR p.last_name LIKE ? OR p.code LIKE ?)'); const like = `%${search}%`; args.push(like, like, like); }
+  const rows = await env.DB.prepare(
+    `SELECT p.*, c.name contractor_name FROM personnel p
+     LEFT JOIN contractors c ON c.id = p.contractor_id
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY p.is_active DESC, p.id DESC LIMIT 500`).bind(...args).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/personnel', 'personnel', async (req, env) => {
+  const b = await readJson(req);
+  const first = String(b.first_name || '').trim(), last = String(b.last_name || '').trim(), code = String(b.code || '').trim();
+  const type = b.type === 'internal' ? 'internal' : 'contractor';
+  if (!first || !last) return jerr('نام و نام خانوادگی الزامی است.');
+  if (!code) return jerr('کد پرسنلی الزامی است.');
+  if (await env.DB.prepare(`SELECT id FROM personnel WHERE code=?`).bind(code).first()) return jerr('کد پرسنلی تکراری است.');
+  const contractorId = b.contractor_id ? +b.contractor_id : null;
+  if (type === 'contractor' && !contractorId) return jerr('برای پرسنل پیمانکار، انتخاب پیمانکار الزامی است.');
+  if (contractorId && !(await env.DB.prepare(`SELECT id FROM contractors WHERE id=?`).bind(contractorId).first())) return jerr('پیمانکار انتخابی وجود ندارد.');
+  const r = await env.DB.prepare(
+    `INSERT INTO personnel (first_name, last_name, code, type, contractor_id, national_id, phone, position, is_active, created_at)
+     VALUES (?,?,?,?,?,?,?,?,1,?)`)
+    .bind(first, last, code, type, contractorId, String(b.national_id || '').trim(), String(b.phone || '').trim(), String(b.position || '').trim(), nowIso()).run();
+  return json({ ok: true, id: r.meta.last_row_id });
+});
+route('PUT', '/api/personnel/:id', 'personnel', async (req, env, params) => {
+  const id = +params[0];
+  const b = await readJson(req);
+  const p = await env.DB.prepare(`SELECT * FROM personnel WHERE id=?`).bind(id).first();
+  if (!p) return jerr('پرسنل یافت نشد.', 404);
+  if (b.code !== undefined && String(b.code).trim() !== '') {
+    if (await env.DB.prepare(`SELECT id FROM personnel WHERE code=? AND id<>?`).bind(String(b.code).trim(), id).first()) return jerr('کد پرسنلی تکراری است.');
+  }
+  const type = b.type === 'internal' ? 'internal' : 'contractor';
+  let contractorId = p.contractor_id;
+  if (b.contractor_id !== undefined) contractorId = b.contractor_id ? +b.contractor_id : null;
+  if (type === 'contractor' && !contractorId) return jerr('برای پرسنل پیمانکار، انتخاب پیمانکار الزامی است.');
+  const set = [], args = [];
+  const map = { first_name: 'first_name', last_name: 'last_name', code: 'code', national_id: 'national_id', phone: 'phone', position: 'position' };
+  for (const [k, col] of Object.entries(map)) {
+    if (b[k] !== undefined) { set.push(col + '=?'); args.push(String(b[k]).trim()); }
+  }
+  if (b.type !== undefined) { set.push('type=?'); args.push(type); }
+  if (b.contractor_id !== undefined) {
+    if (contractorId && !(await env.DB.prepare(`SELECT id FROM contractors WHERE id=?`).bind(contractorId).first())) return jerr('پیمانکار انتخابی وجود ندارد.');
+    set.push('contractor_id=?'); args.push(contractorId);
+  }
+  if (b.is_active !== undefined) { set.push('is_active=?'); args.push(b.is_active ? 1 : 0); }
+  if (!set.length) return json({ ok: true });
+  args.push(id);
+  await env.DB.prepare(`UPDATE personnel SET ${set.join(', ')} WHERE id=?`).bind(...args).run();
+  return json({ ok: true });
+});
