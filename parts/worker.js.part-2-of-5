@@ -1,0 +1,157 @@
+
+// ---------- توکن نشست ----------
+const TOKEN_TTL = 7 * 24 * 3600 * 1000;
+const b64uBytes = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64uStr = s => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64u = s => atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+
+async function getSessionKey(env) {
+  const row = await env.DB.prepare(`SELECT v FROM settings WHERE k='session_secret'`).first();
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(row.v), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+function parseCookie(req, name) {
+  const m = req.headers.get('Cookie')?.match(new RegExp(`(?:^|;)\\s*${name}=([^;]+)`));
+  return m ? m[1] : null;
+}
+
+async function issueToken(env, user) {
+  const key = await getSessionKey(env);
+  const payload = { u: user.id, r: user.role, e: Date.now() + TOKEN_TTL };
+  const body = b64uStr(JSON.stringify(payload));
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
+  return `${body}.${b64uBytes(sig)}`;
+}
+
+async function getUserFromToken(env, req) {
+  const token = parseCookie(req, 'sid');
+  if (!token) return null;
+  const [body, sig] = token.split('.');
+  if (!body || !sig) return null;
+  try {
+    const key = await getSessionKey(env);
+    const sigBytes = Uint8Array.from(fromB64u(sig), c => c.charCodeAt(0));
+    const ok = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(body));
+    if (!ok) return null;
+    const payload = JSON.parse(fromB64u(body));
+    if (!payload.e || payload.e < Date.now()) return null;
+    const row = await env.DB.prepare(`SELECT id, username, name, role, is_active FROM users WHERE id=?`).bind(payload.u).first();
+    if (!row || !row.is_active) return null;
+    return row;
+  } catch { return null; }
+}
+
+// ---------- نقش‌ها ----------
+const ROLES = { admin: 'مدیر کل', manager: 'مدیر', operator: 'اپراتور ثبت', viewer: 'مشاهده‌گر' };
+const WRITE_MATRIX = {
+  admin: ['users', 'projects', 'contractors', 'personnel', 'items', 'deliveries', 'attendance', 'reports'],
+  manager: ['projects', 'contractors', 'personnel', 'items', 'deliveries', 'attendance', 'reports'],
+  operator: ['deliveries', 'attendance', 'reports'],
+  viewer: []
+};
+const canWrite = (user, module) => !!user && (WRITE_MATRIX[user.role] || []).includes(module);
+
+// ---------- ثابت وضعیت حضور ----------
+const STATUS_FA = { present: 'حاضر', absent: 'غایب', leave: 'مرخصی', mission: 'مأموریت', holiday: 'تعطیل' };
+function hoursOf(ci, co) {
+  const [h1, m1] = ci.split(':').map(Number), [h2, m2] = co.split(':').map(Number);
+  let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
+  if (mins < 0) mins += 24 * 60;
+  return +(mins / 60).toFixed(2);
+}
+const strDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '').trim()) ? String(v).trim() : null;
+const timeOk = v => /^\d{2}:\d{2}$/.test(String(v || '').trim()) ? String(v).trim() : null;
+
+// ---------- مسیرها ----------
+const routes = [];
+function route(method, pattern, module, handler) { routes.push({ method, pattern: pattern.split('/').filter(Boolean), module, handler }); }
+
+// --- ورود / خروج / من ---
+route('POST', '/api/login', null, async (req, env) => {
+  const body = await readJson(req);
+  const username = String(body.username || '').trim();
+  const password = String(body.password || '');
+  if (!username || !password) return jerr('نام کاربری و رمز عبور الزامی است.');
+  const user = await env.DB.prepare(`SELECT * FROM users WHERE username=?`).bind(username).first();
+  if (!user || !user.is_active) return jerr('نام کاربری یافت نشد یا غیرفعال است.', 401);
+  const hash = await hashPassword(password, user.salt);
+  if (hash !== user.pass_hash) return jerr('رمز عبور اشتباه است.', 401);
+  const token = await issueToken(env, user);
+  return json({ ok: true, user: { id: user.id, username: user.username, name: user.name, role: user.role } }, 200,
+    { 'Set-Cookie': `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${TOKEN_TTL / 1000}` });
+});
+route('POST', '/api/logout', null, async () => json({ ok: true }, 200, { 'Set-Cookie': 'sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' }));
+route('GET', '/api/me', null, async (req, env, params, url, user) => {
+  if (!user) return jerr('ابتدا وارد شوید.', 401);
+  return json({ user: { id: user.id, username: user.username, name: user.name, role: user.role, roleLabel: ROLES[user.role] }, canWrite: WRITE_MATRIX[user.role] });
+});
+
+// --- داشبورد ---
+route('GET', '/api/stats', null, async (req, env, params, url, user) => {
+  if (!user) return jerr('ابتدا وارد شوید.', 401);
+  const today = todayJalali();
+  const monthPrefix = today.slice(0, 7);
+  const one = async (sql, ...args) => await env.DB.prepare(sql).bind(...args).first();
+  const projects = (await one(`SELECT COUNT(*) c FROM projects WHERE is_active=1`)).c;
+  const contractors = (await one(`SELECT COUNT(*) c FROM contractors WHERE is_active=1`)).c;
+  const personnel = (await one(`SELECT COUNT(*) c FROM personnel WHERE is_active=1`)).c;
+  const presentToday = (await one(`SELECT COUNT(*) c FROM attendance a JOIN personnel p ON p.id=a.personnel_id WHERE a.jdate=? AND a.status='present' AND p.is_active=1`, today)).c;
+  const deliveriesToday = (await one(`SELECT COUNT(*) c FROM deliveries WHERE jdate=?`, today)).c;
+  const dm = await one(`SELECT COUNT(*) c, COALESCE(SUM(quantity),0) q FROM deliveries WHERE substr(jdate,1,7)=?`, monthPrefix);
+  const reportsToday = (await one(`SELECT COUNT(*) c FROM daily_reports WHERE jdate=?`, today)).c;
+  const byProject = await env.DB.prepare(
+    `SELECT pr.name, COUNT(a.id) n FROM attendance a JOIN projects pr ON pr.id=a.project_id
+     WHERE a.jdate=? AND a.status='present' GROUP BY a.project_id ORDER BY n DESC LIMIT 8`).bind(today).all();
+  return json({
+    projects, contractors, personnel, presentToday, deliveriesToday,
+    deliveriesMonth: dm.c, deliveriesMonthQty: dm.q, reportsToday,
+    byProject: byProject.results || [], today
+  });
+});
+
+// --- کاربران (ادمین) ---
+route('GET', '/api/users', 'users', async (req, env) => {
+  const rows = await env.DB.prepare(`SELECT id, username, name, role, is_active, created_at FROM users ORDER BY id`).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/users', 'users', async (req, env) => {
+  const b = await readJson(req);
+  const username = String(b.username || '').trim();
+  const name = String(b.name || '').trim();
+  const password = String(b.password || '');
+  if (!ROLES[b.role]) return jerr('نقش نامعتبر است.');
+  if (!username || !name || !password) return jerr('نام کاربری، نام و رمز عبور الزامی است.');
+  if (password.length < 6) return jerr('رمز عبور باید حداقل ۶ نویسه باشد.');
+  if (await env.DB.prepare(`SELECT id FROM users WHERE username=?`).bind(username).first()) return jerr('این نام کاربری قبلاً ثبت شده است.');
+  const salt = randomHex(16);
+  const hash = await hashPassword(password, salt);
+  const r = await env.DB.prepare(`INSERT INTO users (username, name, pass_hash, salt, role, is_active, created_at) VALUES (?,?,?,?,?,1,?)`)
+    .bind(username, name, hash, salt, b.role, nowIso()).run();
+  return json({ ok: true, id: r.meta.last_row_id });
+});
+route('PUT', '/api/users/:id', 'users', async (req, env, params) => {
+  const id = +params[0];
+  const b = await readJson(req);
+  if (!(await env.DB.prepare(`SELECT id FROM users WHERE id=?`).bind(id).first())) return jerr('کاربر یافت نشد.', 404);
+  const set = [], args = [];
+  if (b.name !== undefined) { set.push('name=?'); args.push(String(b.name).trim()); }
+  if (b.role !== undefined) {
+    if (!ROLES[b.role]) return jerr('نقش نامعتبر است.');
+    if (id === 1 && b.role !== 'admin') return jerr('نقش کاربر اصلی ادمین قابل تغییر نیست.');
+    set.push('role=?'); args.push(b.role);
+  }
+  if (b.password !== undefined && b.password !== '') {
+    if (String(b.password).length < 6) return jerr('رمز عبور باید حداقل ۶ نویسه باشد.');
+    const salt = randomHex(16);
+    set.push('pass_hash=?', 'salt=?');
+    args.push(await hashPassword(String(b.password), salt), salt);
+  }
+  if (b.is_active !== undefined) {
+    if (id === 1 && !b.is_active) return jerr('امکان غیرفعال کردن کاربر اصلی ادمین وجود ندارد.');
+    set.push('is_active=?'); args.push(b.is_active ? 1 : 0);
+  }
+  if (!set.length) return json({ ok: true });
+  set.push('updated_at=?'); args.push(nowIso(), id);
+  await env.DB.prepare(`UPDATE users SET ${set.join(', ')} WHERE id=?`).bind(...args).run();
+  return json({ ok: true });
+});
