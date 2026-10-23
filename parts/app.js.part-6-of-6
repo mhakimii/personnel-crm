@@ -1,0 +1,146 @@
+
+// ============ اقلام ============
+async function viewItems() {
+  $('#page').innerHTML = `
+  <div class="section-title">
+    <h2>اقلام انبار</h2>
+    <div class="btns">
+      ${canW('items') ? `<button class="btn primary" id="itm-add">${ICONS.plus}<span>افزودن قلم</span></button>` : ''}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <label class="switch-wrap">نمایش غیرفعال‌ها <span class="switch"><input type="checkbox" id="itm-inactive"><span class="track"></span></span></label>
+    </div>
+    <div id="itm-list"></div>
+  </div>`;
+  const load = async () => {
+    const rows = await api('GET', '/api/items' + ($('#itm-inactive').checked ? '?all=1' : ''));
+    const can = canW('items');
+    const body = rows.map(r => `
+      <tr style="${r.is_active ? '' : 'opacity:.5'}">
+        <td><b>${esc(r.name)}</b></td>
+        <td>${esc(r.unit || '')}</td>
+        <td>${r.is_active ? '<span class="badge ok">فعال</span>' : '<span class="badge danger">غیرفعال</span>'}</td>
+        ${can ? `<td class="actions"><button class="icon-btn" data-edit="${r.id}" title="ویرایش">${ICONS.edit}</button></td>` : ''}
+      </tr>`).join('');
+    $('#itm-list').innerHTML = tableWrap(['نام قلم', 'واحد', 'وضعیت', ...(can ? [''] : [])], body);
+    if (can) $('#itm-list [data-edit]').forEach(b => b.onclick = () => itemModal(rows.find(x => String(x.id) === b.dataset.edit), load));
+  };
+  $('#itm-inactive').onchange = load;
+  if (canW('items')) $('#itm-add').onclick = () => itemModal(null, load);
+  load();
+}
+
+function itemModal(i, reload) {
+  openModal({
+    title: i ? 'ویرایش قلم: ' + i.name : 'افزودن قلم انبار',
+    body: `
+      <div class="modal-form">
+        <label class="fl">نام قلم
+          <input class="inp" id="im-name" value="${esc(i?.name || '')}"></label>
+        <label class="fl">واحد اندازه‌گیری
+          <input class="inp" id="im-unit" value="${esc(i?.unit || 'عدد')}" placeholder="عدد، متر، جین، پاکت و..."></label>
+        <label class="switch-wrap">فعال <span class="switch"><input type="checkbox" id="im-active" ${i?.is_active === 0 ? '' : 'checked'}><span class="track"></span></span></label>
+      </div>`,
+    foot: [
+      { label: 'انصراف', class: 'btn' },
+      { label: i ? 'ثبت ویرایش' : 'افزودن', class: 'btn primary', icon: 'check', cb: async () => {
+        try {
+          const data = { name: $('#im-name').value, unit: $('#im-unit').value, is_active: $('#im-active').checked };
+          if (i) await api('PUT', '/api/items/' + i.id, data);
+          else await api('POST', '/api/items', data);
+          toast(i ? 'ویرایش ثبت شد.' : 'قلم اضافه شد.', 'ok');
+          closeModal();
+          reload();
+        } catch (e) { toast(e.message, 'err'); }
+      } }
+    ]
+  });
+}
+
+// ============ مدیران ============
+async function viewUsers() {
+  $('#page').innerHTML = `
+  <div class="section-title">
+    <h2>مدیران و سطوح دسترسی</h2>
+    <div class="btns">
+      <button class="btn primary" id="usr-add">${ICONS.plus}<span>افزودن مدیر</span></button>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-head"><h3>سطوح دسترسی</h3></div>
+    <div class="card-pad"><div class="mini-list">
+      <div class="mini-row"><span><b>مدیر کل</b></span><span style="color:var(--text-2)">دسترسی کامل به همه بخش‌ها و تعریف سایر مدیران</span></div>
+      <div class="mini-row"><span><b>مدیر</b></span><span style="color:var(--text-2)">مدیریت کامل عملیات (پروژه، پیمانکار، پرسنل، انبار، حضور، گزارش)</span></div>
+      <div class="mini-row"><span><b>اپراتور ثبت</b></span><span style="color:var(--text-2)">ثبت حضور و غیاب، تحویل انبار و گزارش روزانه</span></div>
+      <div class="mini-row"><span><b>مشاهده‌گر</b></span><span style="color:var(--text-2)">مشاهده و خروجی گرفتن از گزارش‌ها بدون امکان ثبت</span></div>
+    </div></div>
+  </div>
+  <div class="card">
+    <div id="usr-list"></div>
+  </div>`;
+  const load = async () => {
+    const rows = await api('GET', '/api/users');
+    const body = rows.map(r => `
+      <tr style="${r.is_active ? '' : 'opacity:.5'}">
+        <td><b>${esc(r.name)}</b></td>
+        <td>${esc(r.username)}</td>
+        <td><span class="badge ${r.role === 'admin' ? 'n' : 'muted'}">${ROLE_FA[r.role] || r.role}</span></td>
+        <td>${r.is_active ? '<span class="badge ok">فعال</span>' : '<span class="badge danger">غیرفعال</span>'}</td>
+        <td class="actions">
+          <button class="icon-btn" data-edit="${r.id}" title="ویرایش">${ICONS.edit}</button>
+        </td>
+      </tr>`).join('');
+    $('#usr-list').innerHTML = tableWrap(['نام', 'نام کاربری', 'سطح دسترسی', 'وضعیت', ''], body);
+    $('#usr-list [data-edit]').forEach(b => b.onclick = () => userModal(rows.find(x => String(x.id) === b.dataset.edit), load));
+  };
+  $('#usr-add').onclick = () => userModal(null, load);
+  load();
+}
+
+function userModal(u, reload) {
+  const isNew = !u;
+  openModal({
+    title: isNew ? 'افزودن مدیر جدید' : 'ویرایش: ' + u.name,
+    body: `
+      <div class="modal-form">
+        <div class="form-row">
+          <label class="fl">نام و نام خانوادگی
+            <input class="inp" id="um-name" value="${esc(u?.name || '')}"></label>
+          <label class="fl">نام کاربری
+            <input class="inp" id="um-user" value="${esc(u?.username || '')}"></label>
+        </div>
+        <div class="form-row">
+          <div class="fl">سطح دسترسی
+            <select class="sel" id="um-role" ${u?.id === 1 ? 'disabled' : ''}>
+              ${Object.keys(ROLE_FA).filter(r2 => !isNew || r2 !== 'admin' || true).map(r2 => `<option value="${r2}" ${u?.role === r2 ? 'selected' : ''}>${ROLE_FA[r2]}</option>`).join('')}
+            </select>
+          </div>
+          <label class="fl">${isNew ? 'رمز عبور' : 'رمز عبور جدید (اختیاری)'}
+            <input class="inp" type="password" id="um-pass" placeholder="${isNew ? '' : 'برای تغییر رمز پر کنید'}"></label>
+        </div>
+        ${isNew ? '' : `<label class="switch-wrap">فعال <span class="switch"><input type="checkbox" id="um-active" ${u?.is_active === 0 ? '' : 'checked'} ${u?.id === 1 ? 'disabled' : ''}><span class="track"></span></span></label>`}
+      </div>`,
+    foot: [
+      { label: 'انصراف', class: 'btn' },
+      { label: isNew ? 'افزودن' : 'ثبت ویرایش', class: 'btn primary', icon: 'check', cb: async () => {
+        try {
+          const data = {
+            name: $('#um-name').value,
+            role: $('#um-role').value,
+            is_active: isNew ? undefined : $('#um-active').checked
+          };
+          const pw = $('#um-pass').value;
+          if (isNew || pw) data.password = pw;
+          if (isNew) { data.username = $('#um-user').value; data.role = $('#um-role').value; }
+          if (isNew) await api('POST', '/api/users', data);
+          else await api('PUT', '/api/users/' + u.id, data);
+          toast(isNew ? 'مدیر اضافه شد.' : 'ویرایش ثبت شد.', 'ok');
+          closeModal();
+          reload();
+        } catch (e) { toast(e.message, 'err'); }
+      } }
+    ]
+  });
+}
