@@ -1,0 +1,155 @@
+// --- گزارش روزانه ---
+route('GET', '/api/reports', 'reports', async (req, env, params, url) => {
+  const sp = url.searchParams;
+  const where = [], args = [];
+  if (sp.get('date')) { where.push('r.jdate=?'); args.push(sp.get('date')); }
+  if (sp.get('from')) { where.push('r.jdate>=?'); args.push(sp.get('from')); }
+  if (sp.get('to')) { where.push('r.jdate<=?'); args.push(sp.get('to')); }
+  if (+sp.get('project_id')) { where.push('r.project_id=?'); args.push(+sp.get('project_id')); }
+  const rows = await env.DB.prepare(
+    `SELECT r.*, pr.name project_name, u.name created_by_name
+     FROM daily_reports r
+     JOIN projects pr ON pr.id=r.project_id
+     LEFT JOIN users u ON u.id=r.created_by
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY r.jdate DESC, r.id DESC LIMIT 1000`).bind(...args).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/reports', 'reports', async (req, env, params, url, user) => {
+  const b = await readJson(req);
+  const projectId = +b.project_id;
+  const jdate = strDate(b.jdate);
+  const content = String(b.content || '').trim();
+  if (!projectId) return jerr('انتخاب پروژه الزامی است.');
+  if (!jdate) return jerr('تاریخ نامعتبر است.');
+  if (!content) return jerr('متن گزارش الزامی است.');
+  const now = nowIso();
+  await env.DB.prepare(
+    `INSERT INTO daily_reports (project_id, jdate, content, created_by, created_at)
+     VALUES (?,?,?,?,?)
+     ON CONFLICT(project_id, jdate) DO UPDATE SET content=excluded.content, created_by=excluded.created_by, updated_at=excluded.updated_at`)
+    .bind(projectId, jdate, content, user.id, now).run();
+  const row = await env.DB.prepare(`SELECT id FROM daily_reports WHERE project_id=? AND jdate=?`).bind(projectId, jdate).first();
+  return json({ ok: true, id: row.id });
+});
+route('DELETE', '/api/reports/:id', 'reports', async (req, env, params) => {
+  await env.DB.prepare(`DELETE FROM daily_reports WHERE id=?`).bind(+params[0]).run();
+  return json({ ok: true });
+});
+
+// --- خروجی‌ها (CSV سازگار با اکسل — اعداد انگلیسی برای محاسبه‌پذیری) ---
+route('GET', '/api/export/deliveries', 'deliveries', async (req, env, params, url) => {
+  const sp = url.searchParams;
+  const where = [], args = [];
+  if (sp.get('from')) { where.push('d.jdate>=?'); args.push(sp.get('from')); }
+  if (sp.get('to')) { where.push('d.jdate<=?'); args.push(sp.get('to')); }
+  if (+sp.get('project_id')) { where.push('d.project_id=?'); args.push(+sp.get('project_id')); }
+  if (+sp.get('contractor_id')) { where.push('p.contractor_id=?'); args.push(+sp.get('contractor_id')); }
+  if (+sp.get('personnel_id')) { where.push('d.personnel_id=?'); args.push(+sp.get('personnel_id')); }
+  if (+sp.get('item_id')) { where.push('d.item_id=?'); args.push(+sp.get('item_id')); }
+  const rows = await env.DB.prepare(
+    `SELECT d.jdate, p.first_name, p.last_name, p.code, p.type, c.name contractor_name, pr.name project_name,
+            i.name item_name, i.unit, d.quantity, d.notes
+     FROM deliveries d
+     JOIN personnel p ON p.id=d.personnel_id
+     LEFT JOIN contractors c ON c.id=p.contractor_id
+     JOIN items i ON i.id=d.item_id
+     JOIN projects pr ON pr.id=d.project_id
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY d.jdate DESC, d.id DESC LIMIT 10000`).bind(...args).all();
+  const out = [['تاریخ', 'نام', 'نام خانوادگی', 'کد پرسنلی', 'نوع', 'پیمانکار', 'پروژه', 'قلم', 'واحد', 'مقدار', 'توضیحات']];
+  for (const r of rows.results || []) {
+    out.push([r.jdate, r.first_name, r.last_name, r.code, r.type === 'internal' ? 'داخلی' : 'پیمانکار', r.contractor_name || '', r.project_name || '', r.item_name, r.unit, r.quantity, r.notes || '']);
+  }
+  return csvResponse(out, 'khorooji-tahvilat-anbar.csv');
+});
+route('GET', '/api/export/attendance', 'attendance', async (req, env, params, url) => {
+  const sp = url.searchParams;
+  const where = [], args = [];
+  if (sp.get('date')) { where.push('a.jdate=?'); args.push(sp.get('date')); }
+  if (sp.get('from')) { where.push('a.jdate>=?'); args.push(sp.get('from')); }
+  if (sp.get('to')) { where.push('a.jdate<=?'); args.push(sp.get('to')); }
+  if (+sp.get('project_id')) { where.push('a.project_id=?'); args.push(+sp.get('project_id')); }
+  if (+sp.get('contractor_id')) { where.push('p.contractor_id=?'); args.push(+sp.get('contractor_id')); }
+  if (+sp.get('personnel_id')) { where.push('a.personnel_id=?'); args.push(+sp.get('personnel_id')); }
+  const rows = await env.DB.prepare(
+    `SELECT a.jdate, p.first_name, p.last_name, p.code, p.type, c.name contractor_name, pr.name project_name, a.status, a.check_in, a.check_out, a.notes
+     FROM attendance a
+     JOIN personnel p ON p.id=a.personnel_id
+     LEFT JOIN contractors c ON c.id=p.contractor_id
+     LEFT JOIN projects pr ON pr.id=a.project_id
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY a.jdate DESC, a.id DESC LIMIT 10000`).bind(...args).all();
+  const out = [['تاریخ', 'نام', 'نام خانوادگی', 'کد پرسنلی', 'نوع', 'پیمانکار', 'پروژه', 'وضعیت', 'ورود', 'خروج', 'ساعت کارکرد', 'توضیحات']];
+  for (const r of rows.results || []) {
+    const hours = (r.status === 'present' && r.check_in && r.check_out) ? hoursOf(r.check_in, r.check_out) : null;
+    out.push([r.jdate, r.first_name, r.last_name, r.code, r.type === 'internal' ? 'داخلی' : 'پیمانکار', r.contractor_name || '', r.project_name || '', STATUS_FA[r.status] || r.status, r.check_in || '', r.check_out || '', hours === null ? '' : hours, r.notes || '']);
+  }
+  return csvResponse(out, 'khorooji-hodoor-ghiab.csv');
+});
+route('GET', '/api/export/reports', 'reports', async (req, env, params, url) => {
+  const sp = url.searchParams;
+  const where = [], args = [];
+  if (sp.get('from')) { where.push('r.jdate>=?'); args.push(sp.get('from')); }
+  if (sp.get('to')) { where.push('r.jdate<=?'); args.push(sp.get('to')); }
+  if (+sp.get('project_id')) { where.push('r.project_id=?'); args.push(+sp.get('project_id')); }
+  const rows = await env.DB.prepare(
+    `SELECT r.jdate, pr.name project_name, r.content, u.name created_by_name, r.updated_at, r.created_at
+     FROM daily_reports r
+     JOIN projects pr ON pr.id=r.project_id
+     LEFT JOIN users u ON u.id=r.created_by
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY r.jdate DESC, r.id DESC LIMIT 10000`).bind(...args).all();
+  const out = [['تاریخ', 'پروژه', 'گزارش روزانه', 'ثبت‌کننده', 'آخرین به‌روزرسانی']];
+  for (const r of rows.results || []) {
+    out.push([r.jdate, r.project_name || '', r.content, r.created_by_name || '', r.updated_at || r.created_at]);
+  }
+  return csvResponse(out, 'khorooji-gozaresh-roozaneh.csv');
+});
+
+// ---------- روتر ----------
+async function handle(request, env) {
+  try {
+    const url = new URL(request.url);
+    if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
+    await ensureDb(env);
+    const user = await getUserFromToken(env, request);
+    return await dispatch(request, env, url, user);
+  } catch (e) {
+    return jerr('خطای داخلی سرور: ' + (e && e.message ? e.message : 'unknown'), 500);
+  }
+}
+
+function matchRoute(r, pathArr, pvals) {
+  if (r.pattern.length !== pathArr.length) return false;
+  pvals.length = 0;
+  for (let i = 0; i < r.pattern.length; i++) {
+    const seg = r.pattern[i];
+    if (seg.startsWith(':')) pvals.push(decodeURIComponent(pathArr[i]));
+    else if (seg !== pathArr[i]) return false;
+  }
+  return true;
+}
+
+async function dispatch(request, env, url, user) {
+  const pathArr = url.pathname.split('/').filter(Boolean);
+  for (const r of routes) {
+    if (r.method !== request.method) continue;
+    const pvals = [];
+    if (!matchRoute(r, pathArr, pvals)) continue;
+    if (r.module) {
+      if (!user) return jerr('ابتدا وارد شوید.', 401);
+      if (r.module === 'users') {
+        // مدیریت کاربران: ادمین کامل، مدیر فقط مشاهده
+        if (request.method !== 'GET' && user.role !== 'admin') return jerr('دسترسی شما برای این عملیات کافی نیست.', 403);
+        if (request.method === 'GET' && !['admin', 'manager'].includes(user.role)) return jerr('دسترسی شما برای این عملیات کافی نیست.', 403);
+      } else if (request.method !== 'GET' && !canWrite(user, r.module)) {
+        return jerr('دسترسی شما برای این عملیات کافی نیست.', 403);
+      }
+    }
+    return await r.handler(request, env, pvals, url, user);
+  }
+  return jerr('مسیر یافت نشد.', 404);
+}
+
+export default { fetch: handle };
