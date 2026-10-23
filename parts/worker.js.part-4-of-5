@@ -1,0 +1,133 @@
+
+// --- اقلام انبار ---
+route('GET', '/api/items', 'items', async (req, env, params, url) => {
+  const all = url.searchParams.get('all') === '1';
+  const rows = await env.DB.prepare(`SELECT * FROM items ${all ? '' : 'WHERE is_active=1'} ORDER BY is_active DESC, name`).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/items', 'items', async (req, env) => {
+  const b = await readJson(req);
+  const name = String(b.name || '').trim();
+  if (!name) return jerr('نام قلم الزامی است.');
+  if (await env.DB.prepare(`SELECT id FROM items WHERE name=?`).bind(name).first()) return jerr('قلمی با این نام قبلاً ثبت شده است.');
+  const r = await env.DB.prepare(`INSERT INTO items (name, unit, is_active, created_at) VALUES (?,?,1,?)`)
+    .bind(name, String(b.unit || 'عدد').trim() || 'عدد', nowIso()).run();
+  return json({ ok: true, id: r.meta.last_row_id });
+});
+route('PUT', '/api/items/:id', 'items', async (req, env, params) => {
+  const id = +params[0];
+  const b = await readJson(req);
+  if (!(await env.DB.prepare(`SELECT id FROM items WHERE id=?`).bind(id).first())) return jerr('قلم یافت نشد.', 404);
+  const set = [], args = [];
+  if (b.name !== undefined) {
+    const name = String(b.name).trim();
+    if (!name) return jerr('نام قلم الزامی است.');
+    if (await env.DB.prepare(`SELECT id FROM items WHERE name=? AND id<>?`).bind(name, id).first()) return jerr('قلمی با این نام قبلاً ثبت شده است.');
+    set.push('name=?'); args.push(name);
+  }
+  if (b.unit !== undefined) { set.push('unit=?'); args.push(String(b.unit).trim() || 'عدد'); }
+  if (b.is_active !== undefined) { set.push('is_active=?'); args.push(b.is_active ? 1 : 0); }
+  if (set.length) { args.push(id); await env.DB.prepare(`UPDATE items SET ${set.join(', ')} WHERE id=?`).bind(...args).run(); }
+  return json({ ok: true });
+});
+
+// --- تحویلات انبار ---
+route('GET', '/api/deliveries', 'deliveries', async (req, env, params, url) => {
+  const sp = url.searchParams;
+  const where = [], args = [];
+  if (sp.get('from')) { where.push('d.jdate>=?'); args.push(sp.get('from')); }
+  if (sp.get('to')) { where.push('d.jdate<=?'); args.push(sp.get('to')); }
+  if (+sp.get('project_id')) { where.push('d.project_id=?'); args.push(+sp.get('project_id')); }
+  if (+sp.get('contractor_id')) { where.push('p.contractor_id=?'); args.push(+sp.get('contractor_id')); }
+  if (+sp.get('personnel_id')) { where.push('d.personnel_id=?'); args.push(+sp.get('personnel_id')); }
+  if (+sp.get('item_id')) { where.push('d.item_id=?'); args.push(+sp.get('item_id')); }
+  const rows = await env.DB.prepare(
+    `SELECT d.*, p.first_name, p.last_name, p.code person_code, p.type person_type, c.name contractor_name,
+            i.name item_name, i.unit item_unit, pr.name project_name, u.name created_by_name
+     FROM deliveries d
+     JOIN personnel p ON p.id=d.personnel_id
+     LEFT JOIN contractors c ON c.id=p.contractor_id
+     JOIN items i ON i.id=d.item_id
+     JOIN projects pr ON pr.id=d.project_id
+     LEFT JOIN users u ON u.id=d.created_by
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY d.jdate DESC, d.id DESC LIMIT 1000`).bind(...args).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/deliveries', 'deliveries', async (req, env, params, url, user) => {
+  const b = await readJson(req);
+  const projectId = +b.project_id, personnelId = +b.personnel_id, itemId = +b.item_id;
+  const qty = parseFloat(b.quantity);
+  if (!projectId || !personnelId || !itemId) return jerr('انتخاب پروژه، پرسنل و قلم الزامی است.');
+  if (!(qty > 0)) return jerr('مقدار باید عدد مثبت باشد.');
+  const jdate = strDate(b.jdate);
+  if (!jdate) return jerr('تاریخ نامعتبر است.');
+  if (!(await env.DB.prepare(`SELECT id FROM personnel WHERE id=? AND is_active=1`).bind(personnelId).first())) return jerr('پرسنل انتخابی وجود ندارد یا غیرفعال است.');
+  if (!(await env.DB.prepare(`SELECT id FROM items WHERE id=? AND is_active=1`).bind(itemId).first())) return jerr('قلم انتخابی وجود ندارد یا غیرفعال است.');
+  if (!(await env.DB.prepare(`SELECT id FROM projects WHERE id=? AND is_active=1`).bind(projectId).first())) return jerr('پروژه انتخابی وجود ندارد یا غیرفعال است.');
+  const r = await env.DB.prepare(
+    `INSERT INTO deliveries (project_id, personnel_id, item_id, quantity, jdate, notes, created_by, created_at)
+     VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(projectId, personnelId, itemId, qty, jdate, String(b.notes || '').trim(), user.id, nowIso()).run();
+  return json({ ok: true, id: r.meta.last_row_id });
+});
+route('DELETE', '/api/deliveries/:id', 'deliveries', async (req, env, params) => {
+  await env.DB.prepare(`DELETE FROM deliveries WHERE id=?`).bind(+params[0]).run();
+  return json({ ok: true });
+});
+
+// --- حضور و غیاب ---
+route('GET', '/api/attendance', 'attendance', async (req, env, params, url) => {
+  const sp = url.searchParams;
+  const where = [], args = [];
+  if (sp.get('date')) { where.push('a.jdate=?'); args.push(sp.get('date')); }
+  if (sp.get('from')) { where.push('a.jdate>=?'); args.push(sp.get('from')); }
+  if (sp.get('to')) { where.push('a.jdate<=?'); args.push(sp.get('to')); }
+  if (+sp.get('project_id')) { where.push('a.project_id=?'); args.push(+sp.get('project_id')); }
+  if (+sp.get('contractor_id')) { where.push('p.contractor_id=?'); args.push(+sp.get('contractor_id')); }
+  if (+sp.get('personnel_id')) { where.push('a.personnel_id=?'); args.push(+sp.get('personnel_id')); }
+  const rows = await env.DB.prepare(
+    `SELECT a.*, p.first_name, p.last_name, p.code person_code, p.type person_type, c.name contractor_name, pr.name project_name
+     FROM attendance a
+     JOIN personnel p ON p.id=a.personnel_id
+     LEFT JOIN contractors c ON c.id=p.contractor_id
+     LEFT JOIN projects pr ON pr.id=a.project_id
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY a.jdate DESC, a.id DESC LIMIT 2000`).bind(...args).all();
+  return json(rows.results || []);
+});
+route('POST', '/api/attendance/bulk', 'attendance', async (req, env, params, url, user) => {
+  const b = await readJson(req);
+  const jdate = strDate(b.jdate);
+  if (!jdate) return jerr('تاریخ نامعتبر است.');
+  const rowsArr = Array.isArray(b.rows) ? b.rows : [];
+  if (!rowsArr.length) return jerr('هیچ ردیفی برای ثبت ارسال نشده است.');
+  const now = nowIso();
+  let count = 0;
+  for (const row of rowsArr) {
+    const pid = +row.personnel_id;
+    if (!pid) continue;
+    const status = ['present', 'absent', 'leave', 'mission', 'holiday'].includes(row.status) ? row.status : 'present';
+    const projectId = row.project_id ? +row.project_id : (b.project_id ? +b.project_id : null);
+    const cin = timeOk(row.check_in), cout = timeOk(row.check_out);
+    if (status === 'present' && (!cin || !cout)) {
+      const nameRow = await env.DB.prepare(`SELECT first_name, last_name FROM personnel WHERE id=?`).bind(pid).first();
+      return jerr(`برای «${nameRow ? nameRow.first_name + ' ' + nameRow.last_name : pid}» با وضعیت حاضر، ساعت ورود و خروج الزامی است.`);
+    }
+    if (cin && cout && cout <= cin) return jerr('ساعت خروج باید بعد از ساعت ورود باشد.');
+    await env.DB.prepare(
+      `INSERT INTO attendance (personnel_id, project_id, jdate, status, check_in, check_out, notes, created_by, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(personnel_id, jdate) DO UPDATE SET
+         project_id=excluded.project_id, status=excluded.status, check_in=excluded.check_in,
+         check_out=excluded.check_out, notes=excluded.notes, updated_at=excluded.updated_at`)
+      .bind(pid, projectId, jdate, status, cin, cout, String(row.notes || '').trim() || null, user.id, now).run();
+    count++;
+  }
+  return json({ ok: true, count });
+});
+route('DELETE', '/api/attendance/:id', 'attendance', async (req, env, params) => {
+  await env.DB.prepare(`DELETE FROM attendance WHERE id=?`).bind(+params[0]).run();
+  return json({ ok: true });
+});
+
