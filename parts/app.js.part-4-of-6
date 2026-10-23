@@ -1,0 +1,221 @@
+            <select class="sel" id="fm-from"><option value="">پرسنل داخلی</option><option value="__all__">همه</option></select>
+          </div>
+          <div class="fl">گیرنده
+            <select class="sel" id="fm-person"><option value="">انتخاب گیرنده</option></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="fl">قلم انبار
+            <select class="sel" id="fm-item"><option value="">انتخاب قلم</option></select>
+          </div>
+          <label class="fl">مقدار
+            <input class="inp" id="fm-qty" type="number" min="0.01" step="any" placeholder="">
+          </label>
+        </div>
+        <label class="fl">توضیحات
+          <textarea class="inp" id="fm-notes" rows="2"></textarea>
+        </label>
+      </div>`,
+    foot: [
+      { label: 'انصراف', class: 'btn' },
+      { label: 'ذخیره تحویل', class: 'btn primary', icon: 'check', cb: async () => {
+        try {
+          if (!$('#fm-person').value) throw new Error('گیرنده را انتخاب کنید.');
+          if (!$('#fm-item').value) throw new Error('قلم را انتخاب کنید.');
+          await api('POST', '/api/deliveries', {
+            jdate: $('#dlv-date').value,
+            project_id: $('#fm-project').value,
+            personnel_id: $('#fm-person').value,
+            item_id: $('#fm-item').value,
+            quantity: $('#fm-qty').value,
+            notes: $('#fm-notes').value
+          });
+          toast('تحویل ثبت شد.', 'ok');
+          closeModal();
+          reload();
+        } catch (e) { toast(e.message, 'err'); }
+      } }
+    ]
+  });
+  const items = await api('GET', '/api/items');
+  $('#fm-item').innerHTML = '<option value="">انتخاب قلم</option>' + items.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  async function loadPeople() {
+    if (!$('#fm-project').value) return;
+    const sp = new URLSearchParams({ project_id: $('#fm-project').value, all: '1' });
+    if (['', 'internal'].includes($('#fm-from').value)) sp.set('type', 'internal');
+    if ($('#fm-from').value && $('#fm-from').value !== '__all__') sp.delete('type'), sp.set('contractor_id', $('#fm-from').value);
+    const people = await api('GET', '/api/personnel?' + sp.toString());
+    $('#fm-person').innerHTML = '<option value="">انتخاب گیرنده</option>' + people.map(p =>
+      p.type === 'internal'
+        ? `<option value="${p.id}">${esc(p.first_name)} ${esc(p.last_name)} — ${esc(p.code)} (داخلی)</option>`
+        : `<option value="${p.id}">${esc(p.first_name)} ${esc(p.last_name)} — ${esc(p.contractor_name || '')}</option>`).join('');
+  }
+  $('#fm-project').onchange = loadPeople;
+  $('#fm-from').onchange = loadPeople;
+}
+
+// ============ گزارش روزانه ============
+async function viewReports() {
+  const projects = await api('GET', '/api/projects');
+  $('#page').innerHTML = `
+  <div class="section-title">
+    <h2>گزارش‌های روزانه پروژه‌ها</h2>
+    <div class="btns">
+      <button class="btn" id="rep-csv">${ICONS.download}<span>خروجی اکسل</span></button>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-head"><h3>ثبت / بروزرسانی گزارش روز</h3><span class="hint">برای هر پروژه و روز، فقط یک گزارش ذخیره می‌شود؛ ثبت مجدد همان گزارش را به‌روزرسانی می‌کند.</span></div>
+    <div class="card-pad">
+      <div class="modal-form">
+        <div class="form-row">
+          <div class="fl">پروژه
+            <select class="sel" id="rep-project"><option value="">انتخاب پروژه</option>${projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+          </div>
+          <label class="fl">تاریخ
+            <div class="jdate-wrap"><input type="hidden" id="rep-date" data-jdate><div class="jdate-box"><span class="txt ph">انتخاب تاریخ</span><span class="cal-ic">${ICONS.calendar}</span></div></div>
+          </label>
+        </div>
+        <label class="fl">متن گزارش روزانه
+          <textarea class="inp" id="rep-content" rows="4" placeholder="شرح رویدادها، میزان پیشرفت کار و نکات مهم روز را ثبت کنید"></textarea>
+        </label>
+        <div><button class="btn primary" id="rep-save">${ICONS.check}<span>ذخیره گزارش</span></button></div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <div class="filters">
+        <label class="f"><label>از تاریخ</label>
+          <div class="jdate-wrap"><input type="hidden" id="rep-from" data-jdate><div class="jdate-box"><span class="txt ph">انتخاب تاریخ</span><span class="cal-ic">${ICONS.calendar}</span></div></div>
+        </label>
+        <label class="f"><label>تا تاریخ</label>
+          <div class="jdate-wrap"><input type="hidden" id="rep-to" data-jdate><div class="jdate-box"><span class="txt ph">انتخاب تاریخ</span><span class="cal-ic">${ICONS.calendar}</span></div></div>
+        </label>
+        <div class="f"><label>پروژه</label>
+          <select class="sel" id="rep-pfilter"><option value="">همه</option>${projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+        </div>
+        <button class="btn soft" id="rep-filter">اعمال فیلتر</button>
+      </div>
+    </div>
+    <div id="rep-list"></div>
+  </div>`;
+  iPickers($('#page'));
+  const collect = () => {
+    const sp = new URLSearchParams();
+    const from = $('#rep-from').value, to = $('#rep-to').value;
+    if (from) sp.set('from', from);
+    if (to) sp.set('to', to);
+    if ($('#rep-pfilter').value) sp.set('project_id', $('#rep-pfilter').value);
+    return sp;
+  };
+  const load = async () => {
+    const sp = collect();
+    const rows = await api('GET', '/api/reports?' + sp.toString());
+    const body = rows.map(r => `
+      <tr>
+        <td class="num">${toFa(r.jdate)}</td>
+        <td><b>${esc(r.project_name)}</b></td>
+        <td style="max-width:460px"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.content)}</div></td>
+        <td>${esc(r.created_by_name || '')}</td>
+        <td>${r.updated_at ? esc(r.updated_at.slice(0, 16).replace('T', ' ')) : ''}</td>
+        <td class="actions">
+          <button class="icon-btn" data-edit="${r.id}" title="پیش نمایش / ویرایش">${ICONS.edit}</button>
+        </td>
+      </tr>`).join('');
+    $('#rep-list').innerHTML = tableWrap(['تاریخ', 'پروژه', 'گزارش', 'ثبت‌کننده', 'آخرین ویرایش', ''], body);
+    $('#rep-list [data-edit]').forEach(b => b.onclick = () => {
+      const r = rows.find(x => String(x.id) === b.dataset.edit);
+      openModal({
+        title: 'گزارش ' + JDate.format(r.jdate) + ' — ' + r.project_name,
+        wide: true,
+        body: `<div style="white-space:pre-wrap;line-height:2;font-size:13.5px">${esc(r.content)}</div>
+          ${canW('reports') ? `<div style="margin-top:20px"><button class="btn soft" id="rep-edit-btn">ویرایش این گزارش</button></div>` : ''}`,
+        foot: [{ label: 'بستن', class: 'btn', cb: () => closeModal() }]
+      });
+      if (canW('reports')) $('#rep-edit-btn').onclick = () => {
+        closeModal();
+        $('#rep-project').value = r.project_id;
+        $('#rep-date').value = r.jdate;
+        const bx = $('#rep-date').closest('.jdate-box');
+        $('.txt', bx).classList.remove('ph');
+        $('.txt', bx).textContent = JDate.format(r.jdate);
+        $('#rep-content').value = r.content;
+        $('#rep-content').focus();
+      };
+    });
+  };
+  $('#rep-filter').onclick = load;
+  load();
+  $('#rep-save').onclick = async () => {
+    try {
+      await api('POST', '/api/reports', { project_id: $('#rep-project').value, jdate: $('#rep-date').value, content: $('#rep-content').value });
+      toast('گزارش ثبت شد.', 'ok');
+      $('#rep-content').value = '';
+      load();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  $('#rep-csv').onclick = () => window.open('/api/export/reports?' + collect().toString(), '_blank');
+}
+
+// ============ پرسنل ============
+async function viewPersonnel() {
+  const [contractors] = await Promise.all([api('GET', '/api/contractors?all=1')]);
+  $('#page').innerHTML = `
+  <div class="section-title">
+    <h2>پرسنل</h2>
+    <div class="btns">
+      ${canW('personnel') ? `<button class="btn primary" id="psn-add">${ICONS.plus}<span>افزودن پرسنل</span></button>` : ''}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <div class="filters">
+        <input class="inp" id="psn-q" style="max-width:220px" placeholder="جستجو: نام یا کد پرسنلی">
+        <div class="f"><label>نوع</label>
+          <select class="sel" id="psn-type"><option value="">همه</option><option value="internal">داخلی</option><option value="contractor">پیمانکار</option></select>
+        </div>
+        <div class="f"><label>پیمانکار</label>
+          <select class="sel" id="psn-contractor"><option value="">همه</option>${contractors.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <label class="switch-wrap">نمایش غیرفعال‌ها <span class="switch"><input type="checkbox" id="psn-inactive"><span class="track"></span></span></label>
+        <button class="btn soft" id="psn-filter">${ICONS.search}<span>جستجو</span></button>
+      </div>
+    </div>
+    <div id="psn-list"></div>
+  </div>`;
+  const load = async () => {
+    const sp = new URLSearchParams();
+    if ($('#psn-q').value.trim()) sp.set('q', $('#psn-q').value.trim());
+    if ($('#psn-type').value) sp.set('type', $('#psn-type').value);
+    if ($('#psn-contractor').value) sp.set('contractor_id', $('#psn-contractor').value);
+    if ($('#psn-inactive').checked) sp.set('all', '1');
+    const rows = await api('GET', '/api/personnel?' + sp);
+    const can = canW('personnel');
+    const body = rows.map(r => `
+      <tr style="${r.is_active ? '' : 'opacity:.5'}">
+        <td><b>${esc(r.first_name)} ${esc(r.last_name)}</b></td>
+        <td class="num">${toFa(r.code)}</td>
+        <td>${r.type === 'internal' ? '<span class="badge muted">داخلی</span>' : '<span class="badge n">پیمانکار</span>'}</td>
+        <td>${esc(r.contractor_name || '—')}</td>
+        <td>${esc(r.position || '—')}</td>
+        <td class="num">${r.phone ? toFa(r.phone) : '—'}</td>
+        <td class="num">${r.national_id ? toFa(r.national_id) : '—'}</td>
+        <td>${r.is_active ? '<span class="badge ok">فعال</span>' : '<span class="badge danger">غیرفعال</span>'}</td>
+        ${can ? `<td class="actions">
+          <button class="icon-btn" data-edit="${r.id}" title="ویرایش">${ICONS.edit}</button>
+        </td>` : ''}
+      </tr>`).join('');
+    $('#psn-list').innerHTML = tableWrap(
+      ['نام و نام خانوادگی', 'کد پرسنلی', 'نوع', 'پیمانکار', 'سمت', 'تلفن', 'کد ملی', 'وضعیت', ...(can ? [''] : [])],
+      body);
+    if (can) $('#psn-list [data-edit]').forEach(b => b.onclick = () => personnelModal(rows.find(x => String(x.id) === b.dataset.edit), load));
+  };
+  $('#psn-filter').onclick = load;
+  $('#psn-q').keydown = e => { if (e.key === 'Enter') load(); };
+  if (canW('personnel')) $('#psn-add').onclick = () => personnelModal(null, load);
+  load();
+}
+
+async function personnelModal(person, reload) {
+  const contractors = person && person.type === 'contractor' || person ? await api('GET', '/api/contractors?all=1') : await api('GET', '/api/contractors?all=1');
