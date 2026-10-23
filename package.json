@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --port 8787 --local",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "assemble": "node scripts/assemble.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.14.0"

@@ -25,7 +25,8 @@
 
 ```bash
 npm install
-npm run dev   # http://localhost:8787
+npm run assemble   # بازسازی worker.js و فایل‌های public از قطعه‌ها
+npm run dev        # http://localhost:8787
 ```
 
 ورود اولیه: نام کاربری `admin` و رمز `Admin@2026` (بعد از ورود، از بخش «مدیران و دسترسی‌ها» رمز را تغییر دهید).
@@ -48,4 +49,12 @@ npx wrangler deploy
 
 ```bash
 node scripts/fetch-fonts.mjs
+```
+
+## بازسازی فایل‌های اصلی از قطعه‌ها
+
+فایل‌های `worker.js`، `public/css/styles.css` و `public/js/app.js` به‌دلیل محدودیت اندازه در API گیت‌هاب، به‌صورت قطعه‌قطعه در پوشه `parts/` ذخیره شده‌اند. برای ساخت فایل‌های اصلی:
+
+```bash
+npm run assemble
 ```
