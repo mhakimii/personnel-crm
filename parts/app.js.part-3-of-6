@@ -1,0 +1,192 @@
+function bulkAttendanceModal(projects, reload) {
+  const today = JDate.today();
+  openModal({
+    title: 'ثبت حضور روزانه گروهی',
+    wide: true,
+    body: `
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:flex-end">
+        <label class="fl" style="max-width:160px">تاریخ
+          <div class="jdate-wrap"><input type="hidden" id="blk-date" data-jdate value="${today}"><div class="jdate-box"><span class="txt" id="blk-date-txt">${JDate.format(today)}</span><span class="cal-ic">${ICONS.calendar}</span></div></div>
+        </label>
+        <div class="fl" style="min-width:180px">پروژه
+          <select class="sel" id="blk-project"><option value="">انتخاب پروژه</option>${projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+        </div>
+        <div class="fl" style="min-width:180px">پیمانکار <span style="color:var(--text-3);font-weight:400">(اختیاری)</span>
+          <select class="sel" id="blk-contractor"><option value="">همه پرسنل پروژه</option></select>
+        </div>
+      </div>
+      <div class="tbl-wrap" style="max-height:46vh;overflow-y:auto" id="blk-list"></div>
+      <div class="hint" style="margin-top:10px;color:var(--text-3);font-size:12px">وضعیت، ساعت ورود و ساعت خروج هر نفر در همین جدول ثبت و با یک دکمه ذخیره می‌شود. «حاضر» بدون ثبت ساعت ورود و خروج پذیرفته نمی‌شود.</div>`,
+    foot: [
+      { label: 'انصراف', class: 'btn' },
+      { label: 'ذخیره حضور روز', class: 'btn primary', icon: 'check', cb: async () => {
+        const rows = [];
+        $$('#blk-list tr.att-row').forEach(tr => {
+          const pid = tr.dataset.pid;
+          const st = $('.blk-status', tr).value;
+          const pin = $('.blk-in', tr).value, pout = $('.blk-out', tr).value;
+          rows.push({ personnel_id: pid, status: st, check_in: pin, check_out: pout, notes: '', project_id: $('#blk-project').value });
+        });
+        if (!rows.length) { toast('پرسنلی برای ثبت وجود ندارد.', 'err'); return; }
+        try {
+          await api('POST', '/api/attendance/bulk', { jdate: $('#blk-date').value, rows });
+          toast('حضور ' + toFa(rows.length) + ' نفر ذخیره شد.', 'ok');
+          closeModal();
+          reload();
+        } catch (e) { toast(e.message, 'err'); }
+      } }
+    ]
+  });
+  $('#blk-date').value = today;
+  const dateBox = $('#blk-date').closest('.jdate-wrap');
+  $('.txt', dateBox).textContent = JDate.format(today);
+  const tbl = $('#blk-list');
+  const contractorsSel = $('#blk-contractor');
+
+  async function loadRows() {
+    const projectId = $('#blk-project').value;
+    if (!projectId) {
+      tbl.innerHTML = '<div class="empty">ابتدا پروژه را انتخاب کنید.</div>';
+      return;
+    }
+    const sp = new URLSearchParams({ project_id: projectId, all: '1' });
+    if (contractorsSel.value) sp.set('contractor_id', contractorsSel.value);
+    const people = await api('GET', '/api/personnel?' + sp.toString());
+    const existing = await api('GET', '/api/attendance?' + new URLSearchParams({ date: $('#blk-date').value }));
+    const byPid = Object.fromEntries(existing.map(r => [r.personnel_id, r]));
+        if (!people.length) {
+      tbl.innerHTML = '<div class="empty">پرسنلی برای این ترکیب یافت نشد.</div>';
+      return;
+    }
+    tbl.innerHTML = tableWrap(['نام و نام خانوادگی', 'کد پرسنلی', 'پیمانکار', 'وضعیت', 'ورود', 'خروج', 'کارکرد'],
+      people.map(p => {
+        const ex = byPid[p.id];
+        const st = ex ? ex.status : 'present';
+        const cin = ex ? ex.check_in || '' : '', cout = ex ? ex.check_out || '' : '';
+        return `
+        <tr class="att-row" data-pid="${p.id}">
+          <td><b>${esc(p.first_name)} ${esc(p.last_name)}</b></td>
+          <td class="num">${toFa(p.code)}</td>
+          <td>${esc(p.contractor_name || '—')}</td>
+          <td><select class="sel blk-status stat-select">
+            ${['present', 'absent', 'leave', 'mission', 'holiday'].map(s => `<option value="${s}" ${s === st ? 'selected' : ''}>${STATUS_FA[s]}</option>`).join('')}
+          </select></td>
+          <td><input class="inp blk-in" type="time" value="${cin}"></td>
+          <td><input class="inp blk-out" type="time" value="${cout}"></td>
+          <td class="hour-chip" data-h></td>
+        </tr>`;
+      }).join(''));
+    const upd = tr => {
+      const cin = $('.blk-in', tr).value, cout = $('.blk-out', tr).value;
+      const h = $('.blk-status', tr).value === 'present' ? hoursBetween(cin, cout) : null;
+      $('[data-h]', tr).textContent = h !== null ? toFa(h) + ' ساعت' : '—';
+    };
+    $$('.att-row', tbl).forEach(tr => {
+      upd(tr);
+      $('.blk-status', tr).onchange = () => { upd(tr); };
+      $('.blk-in', tr).onchange = $('.blk-out', tr).onchange = () => upd(tr);
+    });
+  }
+  $('#blk-project').onchange = loadRows;
+  contractorsSel.onchange = loadRows;
+  $('#blk-date').onchange = loadRows;
+}
+
+// ============ تحویلات انبار ============
+async function viewDeliveries() {
+  const [projects, contractors, items] = await Promise.all([
+    api('GET', '/api/projects'),
+    api('GET', '/api/contractors'),
+    api('GET', '/api/items')
+  ]);
+  $('#page').innerHTML = `
+  <div class="section-title">
+    <h2>تحویلات انبار</h2>
+    <div class="btns">
+      <button class="btn" id="dlv-csv">${ICONS.download}<span>خروجی اکسل</span></button>
+      ${canW('deliveries') ? `<button class="btn primary" id="dlv-add">${ICONS.plus}<span>ثبت تحویل</span></button>` : ''}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <div class="filters">
+        <label class="f"><label>از تاریخ</label>
+          <div class="jdate-wrap"><input type="hidden" id="dlv-from" data-jdate><div class="jdate-box"><span class="txt ph">انتخاب تاریخ</span><span class="cal-ic">${ICONS.calendar}</span></div></div>
+        </label>
+        <label class="f"><label>تا تاریخ</label>
+          <div class="jdate-wrap"><input type="hidden" id="dlv-to" data-jdate><div class="jdate-box"><span class="txt ph">انتخاب تاریخ</span><span class="cal-ic">${ICONS.calendar}</span></div></div>
+        </label>
+        <div class="f"><label>پروژه</label>
+          <select class="sel" id="dlv-project"><option value="">همه</option>${projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+        </div>
+        <div class="f"><label>پیمانکار</label>
+          <select class="sel" id="dlv-contractor"><option value="">همه</option>${contractors.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <div class="f"><label>قلم</label>
+          <select class="sel" id="dlv-item"><option value="">همه</option>${items.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <button class="btn soft" id="dlv-filter">اعمال فیلتر</button>
+      </div>
+    </div>
+    <div id="dlv-list"></div>
+  </div>`;
+  iPickers($('#page'));
+  const collect = () => {
+    const sp = new URLSearchParams();
+    const from = $('#dlv-from').value, to = $('#dlv-to').value;
+    if (from) sp.set('from', from);
+    if (to) sp.set('to', to);
+    if ($('#dlv-project').value) sp.set('project_id', $('#dlv-project').value);
+    if ($('#dlv-contractor').value) sp.set('contractor_id', $('#dlv-contractor').value);
+    if ($('#dlv-item').value) sp.set('item_id', $('#dlv-item').value);
+    return sp;
+  };
+  const load = async () => {
+    const sp = collect();
+    const rows = await api('GET', '/api/deliveries?' + sp.toString());
+    const body = rows.map(r => `
+      <tr>
+        <td class="num">${toFa(r.jdate)}</td>
+        <td><b>${esc(r.first_name)} ${esc(r.last_name)}</b></td>
+        <td class="num">${toFa(r.person_code)}</td>
+        <td>${r.person_type === 'internal' ? '<span class="badge muted">داخلی</span>' : '<span class="badge n">پیمانکار</span>'}</td>
+        <td>${esc(r.contractor_name || '—')}</td>
+        <td>${esc(r.project_name || '—')}</td>
+        <td>${esc(r.item_name)}</td>
+        <td>${esc(r.item_unit || '')}</td>
+        <td class="num"><b>${toFa(Number(r.quantity).toLocaleString('en-US'))}</b></td>
+        <td>${esc(r.notes || '')}</td>
+        <td>${esc(r.created_by_name || '')}</td>
+        ${canW('deliveries') ? `<td class="actions"><button class="icon-btn danger" data-del="${r.id}" title="حذف">${ICONS.trash}</button></td>` : ''}
+      </tr>`).join('');
+    $('#dlv-list').innerHTML = tableWrap(
+      ['تاریخ', 'نام و نام خانوادگی', 'کد پرسنلی', 'نوع', 'پیمانکار', 'پروژه', 'قلم', 'واحد', 'مقدار', 'توضیحات', 'ثبت‌کننده', ...(canW('deliveries') ? [''] : [])],
+      body);
+    $$('#dlv-list [data-del]').forEach(b => b.onclick = async () => {
+      if (await confirmModal('حذف تحویل', 'این رکورد تحویل حذف شود؟')) {
+        try { await api('DELETE', '/api/deliveries/' + b.dataset.del); toast('حذف شد.', 'ok'); load(); } catch (e) { toast(e.message, 'err'); }
+      }
+    });
+  };
+  $('#dlv-filter').onclick = load;
+  load();
+  $('#dlv-csv').onclick = () => window.open('/api/export/deliveries?' + collect().toString(), '_blank');
+  if (canW('deliveries')) $('#dlv-add').onclick = () => deliveryModal(projects, load);
+}
+
+async function deliveryModal(projects, reload) {
+  openModal({
+    title: 'ثبت تحویل قلم انبار',
+    wide: true,
+    body: `
+      <div class="modal-form">
+        <div class="form-row">
+          <label class="fl">تاریخ
+            <div class="jdate-wrap"><input type="hidden" id="dlv-date" data-jdate><div class="jdate-box"><span class="txt ph">انتخاب تاریخ</span><span class="cal-ic">${ICONS.calendar}</span></div></div>
+          </label>
+          <div class="fl">پروژه
+            <select class="sel" id="fm-project"><option value="">انتخاب پروژه</option>${projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="fl">پیمانکار / پرسنل داخلی
