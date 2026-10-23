@@ -67,6 +67,18 @@ const routes = [];
 function route(method, pattern, module, handler) { routes.push({ method, pattern: pattern.split('/').filter(Boolean), module, handler }); }
 
 // --- ورود / خروج / من ---
+route('POST', '/api/login', null, async (req, env) => {});
+route('POST', '/api/logout', null, async () => {});
+
+// --- کنترلی ---
+console.log('');
+
+route('POST', '/api/login', null, async (req, env) => {});
+route('POST', '/api/logout', null, async () => {});
+
+// --- کنترلی دوباره ---
+console.log('');
+
 route('POST', '/api/login', null, async (req, env) => {
   const body = await readJson(req);
   const username = String(body.username || '').trim();
@@ -155,3 +167,4 @@ route('PUT', '/api/users/:id', 'users', async (req, env, params) => {
   await env.DB.prepare(`UPDATE users SET ${set.join(', ')} WHERE id=?`).bind(...args).run();
   return json({ ok: true });
 });
+
