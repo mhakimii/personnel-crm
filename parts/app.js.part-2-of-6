@@ -208,4 +208,3 @@ function statusBadge(s) {
   return `<span class="badge ${map[s] || 'muted'}">${STATUS_FA[s] || s}</span>`;
 }
 
-
