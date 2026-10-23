@@ -1,0 +1,222 @@
+  const p = person || {};
+  openModal({
+    title: person ? 'ویرایش پرسنل: ' + p.first_name + ' ' + p.last_name : 'افزودن پرسنل جدید',
+    body: `
+      <div class="modal-form">
+        <div class="form-row">
+          <label class="fl">نام
+            <input class="inp" id="pm-first" value="${esc(p.first_name || '')}"></label>
+          <label class="fl">نام خانوادگی
+            <input class="inp" id="pm-last" value="${esc(p.last_name || '')}"></label>
+        </div>
+        <div class="form-row">
+          <label class="fl">کد پرسنلی
+            <input class="inp" id="pm-code" value="${esc(p.code || '')}"></label>
+          <div class="fl">نوع نیرو
+            <select class="sel" id="pm-type">
+              <option value="contractor" ${p.type !== 'internal' ? 'selected' : ''}>نیروی پیمانکار</option>
+              <option value="internal" ${p.type === 'internal' ? 'selected' : ''}>نیروی داخلی</option>
+            </select>
+          </div>
+        </div>
+        <div class="fl" id="pm-cwrap">پیمانکار
+          <select class="sel" id="pm-contractor">
+            <option value="">انتخاب پیمانکار</option>
+            ${contractors.map(c => `<option value="${c.id}" ${c.id === p.contractor_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="fl">سمت
+            <input class="inp" id="pm-position" value="${esc(p.position || '')}"></label>
+          <label class="fl">تلفن
+            <input class="inp" id="pm-phone" value="${esc(p.phone || '')}"></label>
+        </div>
+        <div class="form-row">
+          <label class="fl">کد ملی
+            <input class="inp" id="pm-nid" value="${esc(p.national_id || '')}"></label>
+          <label class="switch-wrap" style="margin-top:18px">فعال <span class="switch"><input type="checkbox" id="pm-active" ${p.is_active === 0 ? '' : 'checked'}><span class="track"></span></span></label>
+        </div>
+      </div>`,
+    foot: [
+      { label: 'انصراف', class: 'btn' },
+      { label: person ? 'ثبت ویرایش' : 'افزودن', class: 'btn primary', icon: 'check', cb: async () => {
+        try {
+          const data = {
+            first_name: $('#pm-first').value, last_name: $('#pm-last').value, code: $('#pm-code').value,
+            type: $('#pm-type').value, contractor_id: $('#pm-contractor').value || null,
+            position: $('#pm-position').value, phone: $('#pm-phone').value, national_id: $('#pm-nid').value,
+            is_active: $('#pm-active').checked
+          };
+          if (person) await api('PUT', '/api/personnel/' + person.id, data);
+          else await api('POST', '/api/personnel', data);
+          toast(person ? 'ویرایش ثبت شد.' : 'پرسنل اضافه شد.', 'ok');
+          closeModal();
+          reload();
+        } catch (e) { toast(e.message, 'err'); }
+      } }
+    ]
+  });
+  const toggleC = () => { $('#pm-cwrap').style.display = $('#pm-type').value === 'contractor' ? 'flex' : 'none'; };
+  $('#pm-type').onchange = toggleC;
+  toggleC();
+}
+
+// ============ پیمانکاران ============
+async function viewContractors() {
+  $('#page').innerHTML = `
+  <div class="section-title">
+    <h2>پیمانکاران</h2>
+    <div class="btns">
+      ${canW('contractors') ? `<button class="btn primary" id="ctr-add">${ICONS.plus}<span>افزودن پیمانکار</span></button>` : ''}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <label class="switch-wrap">نمایش غیرفعال‌ها <span class="switch"><input type="checkbox" id="ctr-inactive"><span class="track"></span></span></label>
+    </div>
+    <div id="ctr-list"></div>
+  </div>`;
+  const load = async () => {
+    const rows = await api('GET', '/api/contractors' + ($('#ctr-inactive').checked ? '?all=1' : ''));
+    const can = canW('contractors');
+    const body = rows.map(r => `
+      <tr style="${r.is_active ? '' : 'opacity:.5'}">
+        <td><b>${esc(r.name)}</b></td>
+        <td>${esc(r.contact_person || '—')}</td>
+        <td class="num">${r.phone ? toFa(r.phone) : '—'}</td>
+        <td>${esc(r.description || '—')}</td>
+        <td class="num"><span class="badge n">${toFa(r.personnel_count)} نفر</span></td>
+        <td class="num"><span class="badge muted">${toFa(r.project_count)} پروژه</span></td>
+        <td>${r.is_active ? '<span class="badge ok">فعال</span>' : '<span class="badge danger">غیرفعال</span>'}</td>
+        ${can ? `<td class="actions"><button class="icon-btn" data-edit="${r.id}" title="ویرایش">${ICONS.edit}</button></td>` : ''}
+      </tr>`).join('');
+    $('#ctr-list').innerHTML = tableWrap(
+      ['نام پیمانکار', 'نماینده', 'تلفن', 'توضیحات', 'تعداد پرسنل', 'پروژه‌ها', 'وضعیت', ...(can ? [''] : [])],
+      body);
+    if (can) $('#ctr-list [data-edit]').forEach(b => b.onclick = () => contractorModal(rows.find(x => String(x.id) === b.dataset.edit), load));
+  };
+  $('#ctr-inactive').onchange = load;
+  if (canW('contractors')) $('#ctr-add').onclick = () => contractorModal(null, load);
+  load();
+}
+
+function contractorModal(c, reload) {
+  openModal({
+    title: c ? 'ویرایش پیمانکار: ' + c.name : 'افزودن پیمانکار جدید',
+    body: `
+      <div class="modal-form">
+        <label class="fl">نام پیمانکار / شرکت
+          <input class="inp" id="cm-name" value="${esc(c?.name || '')}"></label>
+        <div class="form-row">
+          <label class="fl">نماینده پیمانکار
+            <input class="inp" id="cm-person" value="${esc(c?.contact_person || '')}"></label>
+          <label class="fl">تلفن
+            <input class="inp" id="cm-phone" value="${esc(c?.phone || '')}"></label>
+        </div>
+        <label class="fl">توضیحات
+          <textarea class="inp" id="cm-desc" rows="2">${esc(c?.description || '')}</textarea></label>
+        <label class="switch-wrap">فعال <span class="switch"><input type="checkbox" id="cm-active" ${c?.is_active === 0 ? '' : 'checked'}><span class="track"></span></span></label>
+      </div>`,
+    foot: [
+      { label: 'انصراف', class: 'btn' },
+      { label: c ? 'ثبت ویرایش' : 'افزودن', class: 'btn primary', icon: 'check', cb: async () => {
+        try {
+          const data = { name: $('#cm-name').value, contact_person: $('#cm-person').value, phone: $('#cm-phone').value, description: $('#cm-desc').value, is_active: $('#cm-active').checked };
+          if (c) await api('PUT', '/api/contractors/' + c.id, data);
+          else await api('POST', '/api/contractors', data);
+          toast(c ? 'ویرایش ثبت شد.' : 'پیمانکار اضافه شد.', 'ok');
+          closeModal();
+          reload();
+        } catch (e) { toast(e.message, 'err'); }
+      } }
+    ]
+  });
+}
+
+// ============ پروژه‌ها ============
+async function viewProjects() {
+  $('#page').innerHTML = `
+  <div class="section-title">
+    <h2>پروژه‌ها</h2>
+    <div class="btns">
+      ${canW('projects') ? `<button class="btn primary" id="prj-add">${ICONS.plus}<span>افزودن پروژه</span></button>` : ''}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <label class="switch-wrap">نمایش غیرفعال‌ها <span class="switch"><input type="checkbox" id="prj-inactive"><span class="track"></span></span></label>
+    </div>
+    <div id="prj-list"></div>
+  </div>`;
+  const load = async () => {
+    const rows = await api('GET', '/api/projects' + ($('#prj-inactive').checked ? '?all=1' : ''));
+    const can = canW('projects');
+    const body = rows.map(r => `
+      <tr style="${r.is_active ? '' : 'opacity:.5'}">
+        <td><b>${esc(r.name)}</b></td>
+        <td class="num">${r.code ? toFa(r.code) : '—'}</td>
+        <td>${esc(r.location || '—')}</td>
+        <td style="max-width:280px">${esc(r.contractor_names || 'بدون پیمانکار')}</td>
+        <td>${esc(r.description || '—')}</td>
+        <td class="num">${r.today_present ? `<span class="badge n">${toFa(r.today_present)} حاضر</span>` : '<span class="badge muted">بدون حاضر</span>'}</td>
+        <td>${r.is_active ? '<span class="badge ok">فعال</span>' : '<span class="badge danger">غیرفعال</span>'}</td>
+        ${can ? `<td class="actions"><button class="icon-btn" data-edit="${r.id}" title="ویرایش">${ICONS.edit}</button></td>` : ''}
+      </tr>`).join('');
+    $('#prj-list').innerHTML = tableWrap(
+      ['نام پروژه', 'کد', 'محل', 'پیمانکاران مرتبط', 'توضیحات', 'حاضران امروز', 'وضعیت', ...(can ? [''] : [])],
+      body);
+    if (can) $('#prj-list [data-edit]').forEach(b => b.onclick = () => projectModal(rows.find(x => String(x.id) === b.dataset.edit), load));
+  };
+  $('#prj-inactive').onchange = load;
+  if (canW('projects')) $('#prj-add').onclick = () => projectModal(null, load);
+  load();
+}
+
+async function projectModal(p, reload) {
+  const contractors = await api('GET', '/api/contractors');
+  let selected = [];
+  if (p) selected = await api('GET', '/api/projects/' + p.id + '/contractors');
+  openModal({
+    title: p ? 'ویرایش پروژه: ' + p.name : 'افزودن پروژه جدید',
+    body: `
+      <div class="modal-form">
+        <label class="fl">نام پروژه
+          <input class="inp" id="prj-name" value="${esc(p?.name || '')}"></label>
+        <div class="form-row">
+          <label class="fl">کد پروژه
+            <input class="inp" id="prj-code" value="${esc(p?.code || '')}"></label>
+          <label class="fl">محل
+            <input class="inp" id="prj-location" value="${esc(p?.location || '')}"></label>
+        </div>
+        <div class="fl">پیمانکاران پروژه
+          <div style="display:flex;flex-wrap:wrap;gap:6px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-height:44px">
+            ${contractors.length ? contractors.map(c => `
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500;background:var(--surface-2);border:1px solid var(--border);padding:5px 10px;border-radius:20px;cursor:pointer">
+                <input type="checkbox" class="prj-ctr" value="${c.id}" ${selected.includes(c.id) ? 'checked' : ''}>
+                ${esc(c.name)}
+              </label>`).join('') : '<span style="color:var(--text-3);font-size:12.5px">ابتدا در بخش پیمانکاران پیمانکار تعریف کنید.</span>'}
+          </div>
+        </div>
+        <label class="fl">توضیحات
+          <textarea class="inp" id="prj-desc" rows="2">${esc(p?.description || '')}</textarea></label>
+        <label class="switch-wrap">فعال <span class="switch"><input type="checkbox" id="prj-active" ${p?.is_active === 0 ? '' : 'checked'}><span class="track"></span></span></label>
+      </div>`,
+    foot: [
+      { label: 'انصراف', class: 'btn' },
+      { label: p ? 'ثبت ویرایش' : 'افزودن', class: 'btn primary', icon: 'check', cb: async () => {
+        try {
+          const data = {
+            name: $('#prj-name').value, code: $('#prj-code').value, location: $('#prj-location').value,
+            description: $('#prj-desc').value, is_active: $('#prj-active').checked,
+            contractor_ids: $$('#modal-root .prj-ctr').filter(i => i.checked).map(i => +i.value)
+          };
+          if (p) await api('PUT', '/api/projects/' + p.id, data);
+          else await api('POST', '/api/projects', data);
+          toast(p ? 'ویرایش ثبت شد.' : 'پروژه اضافه شد.', 'ok');
+          closeModal();
+          reload();
+        } catch (e) { toast(e.message, 'err'); }
+      } }
+    ]
+  });
+}
